@@ -4,10 +4,13 @@
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
-		<title>reveal.js</title>
+    <title>Why Port 10k LOC from C++ to Rust?</title>
+
+    <meta name="description" content="A tale of learning by doing">
+    <meta name="author" content="Kai Michaelis">
 
 		<link rel="stylesheet" href="css/reveal.css">
-		<link rel="stylesheet" href="css/theme/black.css">
+    <link rel="stylesheet" href="css/theme/solarized.css" id="theme">
 
 		<!-- Theme used for syntax highlighting of code -->
 		<link rel="stylesheet" href="lib/css/zenburn.css">
@@ -24,8 +27,227 @@
 	<body>
 		<div class="reveal">
 			<div class="slides">
-				<section>Slide 1</section>
-				<section>Slide 2</section>
+				<!--
+			  Praise for Rust
+				Critique of modern C++
+				Short intro into Panopticon an RE research
+				-->
+        <section>
+          <h1>Why Port 10k LOC to Rust</h1>
+          <h2>Lessons learned</h2>
+        </section>
+
+        <section>
+          <h2>Who?</h2>
+
+					<p>Kai, hacker from Bochum.</p>
+
+					<p>Interested in cryptography and <em>reverse engineering</em>.</p>
+
+					<p>flanfly / @_cibo_</p>
+				</section>
+
+				<!--
+			  Binary RE, reading a book w/ microscope
+				IDA Pro is the industry standard, Win 95
+				Research exists that uses it for data base (Binnavi)
+				1000 EUR, Proprietary
+				I can do it better
+				-->
+        <section data-background="idalarge.gif">
+				</section>
+
+				<!--
+			  Libre, open to extension
+				First meant as a simple disassembler, grew
+				Modern research
+				-->
+        <section>
+					<iframe class="stretch" src="https://panopticon.re/"></iframe>
+				</section>
+
+				<!--
+			  5 years old, 5 rewrites
+        First idea was Haskell, no libraries (like Rust), not smart enough
+				C++11 was new, whole new language, worth checking out
+				Templates, TMP
+				-->
+        <section>
+          <h2>What?</h2>
+
+					<p class="fragment fade-in">First commit is from September 2011</p>
+
+					<p class="fragment fade-in">Everything was done in C++11 and Qt 4 later 5</p>
+
+					<p class="fragment fade-in">Heavy use of template meta programming</p>
+				</section>
+
+				<!--
+			  no representative line, not expressive enough
+				computes new rank (lambda) from max(edge + source)
+
+			  ensure is not a function, complied out in release mode
+
+				iterators are generalization of pointers
+				iterators can't be compared by order
+
+				accumulate == fold
+
+				typename marks depend types
+				typename only required on gcc
+				msvc has different interpretation of the std
+				it takes a week or more to port to another compiler
+
+				computes the max from acc & next value
+				casts to in next value using reinterpret_cast
+				assigns to unsigned int
+				-->
+        <section>
+					<pre><code class="cpp">ensure(lambda.count(source(*p.first,graph)));
+unsigned int rank = std::accumulate(p.first,p.second,
+	 lambda.at(source(*p.first,graph)) + get_edge(*p.first,graph).second,
+#ifdef _MSC_VER
+	 [&](int acc,po::digraph&lt;N,std::pair&lt;int,int&gt;&gt;::edge_descriptor e)
+#else
+	 [&](int acc,typename po::digraph&lt;N,std::pair&lt;int,int&gt;&gt;::edge_descriptor e)
+#endif
+	 {
+		 return std::max(acc,reinterpret_cast&lt;int&gt;(lambda.at(source(e,graph)) +
+						get_edge(e,graph).second));
+	 });
+
+ensure(lambda.insert(std::make_pair(*i,rank)).second);</code></pre>
+				</section>
+
+				<!--
+			  i heard about rust around 0.9 where it had an confusing amount of @ and ~
+				looked like proper indented perl
+
+				a number features made the language love on first sight
+
+				sum types, tagged union. exist in C++ as boost::variant
+				hard to used, verbose as each match operation requires an function obj
+				no deconstruction, takes even more code to painstakingly match members
+				-->
+        <section>
+					<h2>Rust has Sum Types</h2>
+
+					<p>Rust</p>
+					<pre><code>match instr {
+	Instr::Phi(ref vec) => ...
+	Instr::Add(ref a, ref b) => ...
+	...
+}</code></pre>
+					<p>C++</p>
+					<pre><code>struct vis : public boost::static_visitor&lt;std::string&gt;
+{
+	std::string operator()(const int_add&lt;rvalue&gt;&) const { ... }
+	std::string operator()(const univ_phi&lt;rvalue&gt;&) const { ... }
+	...
+};
+vis v;
+
+boost::apply_visitor(v,i);</code></pre>
+				</section>
+
+				<!--
+			  when panopticon grew it became more of an database frontend
+        i came up with a smart pointer the included a database ref
+				reading it pulled it from the database
+				writing it required locking it
+				the writing function is commented-out, i never managed to implement it correctly
+				a guard object checked whenever it had the lock and released it in the destructor
+				a runtime checked version of the borrow checker
+				-->
+  			<section>
+					<h2>Rust has the Borrow Checker</h2>
+
+					<pre class="stretch"><code>template&lt;typename T,typename D&gt;
+struct basic_loc
+{
+	const T* operator-&gt;(void) const { return read(); }
+	const T& operator*(void) const { return *read(); }
+	//T* operator-&gt;(void) { return write(); }
+	//T& operator*(void) { return *write(); }
+
+	const T* read(void) const
+	{
+		std::shared_ptr&lt;loc_control&lt;T&gt;&gt; cb = static_cast&lt;const D*&gt;(this)-&gt;control();
+
+		if(!cb-&gt;has_object())
+			cb-&gt;inner = unmarshal&lt;T&gt;(_uuid,cb-&gt;storage());
+		if(!cb-&gt;object())
+			throw std::runtime_error("reading deleted loc");
+		return cb-&gt;object();
+	}
+
+	T& write(void) { .. }
+}</code></pre>
+				</section>
+
+			  <!--
+			  not the smartest move to rewrite everything for a one-man project
+				i was sick of it
+				quiet a gamble, new language, no programmers
+				but it fun, i'm alone anyway
+				looking back it was for the better
+				-->
+        <section>
+          <h2>The 5th Rewrite</h2>
+
+					<p class="fragment fade-in">The port to Rust started 7th of June and took ~4 months</p>
+
+					<p class="fragment fade-in">No prior Rust experience</p>
+
+					<p class="fragment fade-in">Straight forward translation from C++ to Rust</p>
+				</section>
+
+				 <!--
+				 -->
+         <section>
+          <h2>An enjoyable experience</h2>
+
+					<p class="fragment fade-in">Compiler messages are really helpful</p>
+
+					<p class="fragment fade-in">Found iterator invalidation bugs along the way</p>
+
+					<p class="fragment fade-in">Cargo makes development on different platforms easy</p>
+				</section>
+
+				<!--
+				-->
+        <section>
+          <h2>Some bad parts</h2>
+					<p class="fragment fade-in">GUI libraries are still basic</p>
+
+					<p class="fragment fade-in">Not much documentation on how to use macros</p>
+
+					<p class="fragment fade-in">No best practises on how to package Rust applications</p>
+				</section>
+
+        <section>
+					<h2>Thanks for listening</h2>
+					<div style="float: left; width: 600px" >
+						<img style="border:0; box-shadow: none" src="panopticon.png">
+
+						<p>panopticon.re</p>
+
+						<p><img style="height: 75px; border:0; box-shadow: none; vertical-align:middle; padding-right:15px" src="github.png">das-labor/panopticon</p>
+
+						<p>#panopticon on Freenode</p>
+
+					</div>
+
+					<div style="float: right; width: 600px" >
+						<img style="height: 140px; border:0; box-shadow: none" src="me.png">
+
+						<p><img style="height: 55px; border:0; box-shadow: none; vertical-align:middle; padding-right:15px" src="twitter.png">@_cibo_</p>
+
+						<p><img style="height: 75px; border:0; box-shadow: none; vertical-align:middle; padding-right:15px" src="github.png">flanfly&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</p>
+					</div>
+				</section>
+
+				<!-- HN -->
 			</div>
 		</div>
 
@@ -36,6 +258,8 @@
 			// More info https://github.com/hakimel/reveal.js#configuration
 			Reveal.initialize({
 				history: true,
+				width: 1260,
+				height: 700,
 
 				// More info https://github.com/hakimel/reveal.js#dependencies
 				dependencies: [
